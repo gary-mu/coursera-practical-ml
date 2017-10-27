@@ -1,0 +1,223 @@
+---
+title: "Practical Machine Learning Project"
+author: "Gary Mu"
+date: "10/26/2017"
+output:
+  html_document:
+    df_print: paged
+---
+
+```{r setup and load required packages, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+require(caret)
+require(tidyverse)
+require(impute)
+require(e1071)  
+```
+
+## Executive Summary
+This final project aims to use the wearable produced data to predict the manner in which users did the exercise. 
+
+The "classe" variable in the data set indicates the exercise type -- there are 5 types from A, B,.. E.
+
+I will attemp to use a couple of Machine Learning algorithm to train data and compare them, and
+use the algorithm that has the highest accuracy to predict the testing set. 
+
+##Loading Data
+```{r loading data, echo=FALSE, warning=FALSE, message=F}
+training <- read_csv(file = '~/Dropbox/Coursera/DS/practical-ml/project/data/pml-training.csv')
+testing <- read_csv(file = '~/Dropbox/Coursera/DS/practical-ml/project/data/pml-testing.csv')
+```
+
+#get a high level look on the data
+```{r getting data dimensions}
+dim(training)
+```
+
+In the training dataset, there are around 20K observations and 160 variables. 
+
+Now let's look into what kind of variables are provided with the training set:
+```{r echo=F}
+str(training)
+```
+Most of the variables are data from the wearable device measurements like accelerometer and gyroscope data.
+However, there are also data that are not very helpful in training the dataset.
+These variable includes: X1 (which is row index), user_name, raw_timestamp_part_1, raw_timestamp_part_2
+and cvtd_timestamp
+
+We will then remove them from training and testing dataset.
+
+```{r echo=F}
+#clean data by dropping columns with no useful information
+exclude_columns <-  c('X1',
+                    'user_name',
+                    'raw_timestamp_part_1',
+                    'raw_timestamp_part_2',
+                    'cvtd_timestamp')
+
+#Getting cleaned dataset on training and test set
+training_clean <- training %>% select(-one_of(exclude_columns))
+testing_clean <- testing %>% select(-one_of(exclude_columns))
+```
+
+
+```{r echo=F}
+dim(training_clean)
+```
+And we are indeed down to 155 variables on the dataset.
+
+With 155 variables remaining, let's see if we need further cleaning on the data.
+Let's choose one of the metrics measured by wearable devices: skewness_yaw_arm
+
+```{r echo=F}
+head(unique(training_clean$skewness_yaw_arm), 20)
+```
+We can see most of the data points are numbers, but it's recogized as character data type,
+we will fix this later. 
+
+There are also many NA values as well as '#DIV/0!' values which could be cells that is divided by 0.
+We will replace '#DIV/0!' with 0 value and use KNN methods to impute NA value.
+
+
+```{r echo=F, error=TRUE}
+#There are #DIV/0! values, replace them with 0
+training_clean[training_clean=='#DIV/0!'] <- 0
+#Do the same for test data
+testing_clean[testing_clean=='#DIV/0!'] <- 0
+
+#clean data with NA values by inputing data with KNN methods
+impute.knn(training_clean)
+
+```
+We can see that over 80% of the data are missing, hence we can not impute data.
+Now let's replace the missing data points with 0.
+
+
+```{r echo=F}
+#There are too many NA's so KNN impute does not work, we will replace with 0
+training_clean[is.na(training_clean)] <- 0
+#Do the same for test data
+testing_clean[is.na(testing_clean)] <- 0
+#Check again to see if NA and #DIV/0! value has been replaced
+unique(training_clean$skewness_yaw_arm)
+```
+
+And we have suscessfully cleaned the '#DIV/0!' and missing value with 0 value as replacement.
+
+Now let's deal with the columns that should be numeric but were read in as chearater data type
+because of the missing and #DIV/0! value. 
+
+In the current cleaned dataset, we can see that only two of them are not numeric:
+new_window and classe, which is the first and the last column in the data.
+
+Hence we will convert all but these two columns into numeric:
+```{r echo=F}
+training_clean[,-c(1,155)] <- apply(training_clean[,-c(1,155)], 2, as.numeric)
+testing_clean[,-c(1,155)] <- apply(testing_clean[,-c(1,155)], 2, as.numeric)
+```
+
+However, there are more things we need to clean: the two variables new_window and classe should be
+coded as factors, and we should also check the variance of all the numeric columns.
+If they are all close to 0, the algorithms won't be able to use the information to model.
+
+
+```{r echo=F}
+#change new_wiondow and classe column to factor
+training_clean <- training_clean %>% mutate(new_window = as.factor(new_window), classe = as.factor(classe))
+testing_clean <- testing_clean %>% mutate(new_window = as.factor(new_window))
+
+#get rid of the columns that are near zero in variance
+near0 <- nearZeroVar(training_clean)
+#1st and 155th column is factor, we want to keep
+near0 <- near0 <- near0[2:(length(near0)-1)]
+```
+We have identified many columns have 0 variance, we will then remove them. 
+Also for the testing dataset, the new_window variable has only one level.
+We will need to match the levels in the training set in order to have the correct
+prediction.
+
+```{r echo=F}
+training_clean <- training_clean %>% select(-c(near0))
+testing_clean <- testing_clean %>% select(-c(near0))
+levels(testing_clean$new_window) <- c('no', 'yes')
+```
+
+And now we have clean datasets to start our modeling.
+
+Let's first split the training dataset into a training and validation set.
+
+```{r echo=F}
+#get a training set and validation set
+inTrain <- createDataPartition(training_clean$classe, p =.7, list = F)
+final_train <- training_clean[inTrain, ]
+final_validation <- training_clean[-inTrain,]
+```
+
+I will now fit the data with 3 ML algorithm and compare their accuracy on the validation set.
+The algorithm I chose are: Boosting (GBM), Support Vector Machine and Decision Trees and 
+reduce the dimensionality with PCA.
+
+1. GBM
+```{r echo=F, message=F}
+#set cross validation params to all algorithms
+train_control <- trainControl(method="cv", number=10)
+
+#First fit gbm
+mf1 <- train(classe ~ . , method = 'gbm', 
+             preProcess = 'pca' , 
+             trControl = train_control , 
+             data = final_train)
+```
+
+
+2. SVM
+```{r echo=F}
+#SVM
+mf2 <- svm(classe ~ . , 
+           preProcess = 'pca' , 
+           trControl = train_control , 
+           data = final_train)
+mf2
+```
+
+
+3. Decision Trees
+```{r}
+#decision tree
+mf3 <- train(classe ~ . , method = 'rpart' ,
+             preProcess = 'pca' , 
+             trControl = train_control , 
+             data = final_train)
+mf3
+```
+
+
+Now let's use these models to predict on the validation set and get accuracy:
+
+```{r echo=F}
+#use GBM to predict
+pred1 <- predict(mf1, final_validation)
+#use SVM to predict
+pred2 <- predict(mf2, final_validation)
+#use decision trees to predict
+pred3 <- predict(mf3, final_validation)
+
+#confusion matrix for each of the algorithm
+print('confusion matrix from GBM model')
+confusionMatrix(pred1, final_validation$classe)
+print('confusion matrix from SVM model')
+confusionMatrix(pred2, final_validation$classe)
+print('confusion matrix from Decision Trees model')
+confusionMatrix(pred3, final_validation$classe)
+```
+
+
+Of all the models, SVM provide the highest accuracy on our validation dataset, and 
+the speed is also the fastest. Hence we will use this model (mf2) to predict the classe
+variable on the test dataset:
+
+```{r echo=F}
+pred_test <- predict(mf2, testing_clean)
+print(pred_test)
+```
+
