@@ -6,3 +6,5 @@ This final project attemps to predict users activity type (A,B,C,...E) in the te
 The dataset consist of data from wearable devices activity measurements.
 
 
+The .Rmd file (course_project.Rmd) is the R Markdown that produced course_project.html file.
+
